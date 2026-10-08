@@ -156,6 +156,20 @@ class MixedPDF(unittest.TestCase):
             self.assertNotIn("Feature Extraction", translated[0].get_text())
             self.assertIn("特征提取", translated[0].get_text())
 
+    def test_comic_mask_erases_letters_and_punctuation_on_flat_background(self):
+        image = Image.new("RGB", (240, 80), "white")
+        font = ImageFont.truetype("C:/Windows/Fonts/arial.ttf", 26)
+        ImageDraw.Draw(image).text((24, 22), "Input.", font=font, fill="black")
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        with fitz.open() as doc:
+            page = doc.new_page(width=240, height=80)
+            page.insert_image(page.rect, stream=buffer.getvalue())
+            repaired, reason = clean_raster_label(page, [20, 20, 100, 55], dpi=72)
+            self.assertEqual(reason, "")
+            pixels = np.array(Image.open(io.BytesIO(repaired[0])).convert("RGB"))
+            self.assertGreater(pixels.min(), 240, "英文或句点仍有可见残留")
+
 
 if __name__ == "__main__":
     unittest.main()

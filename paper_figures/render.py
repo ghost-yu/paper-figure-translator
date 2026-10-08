@@ -8,9 +8,37 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pymupdf as fitz
-from PIL import Image
+from PIL import Image, ImageFont, ImageDraw
+from functools import lru_cache
+import os
+import threading
 
 from .core import check_cancel, crop, manifest, pix_array
+from .vendor.comic_mask import detect_content_mask_in_bbox
+from .vendor.comic_render import pil_word_wrap
+from .vendor.comic_migan import inpaint_pipeline
+
+MODEL_LOCK = threading.Lock()
+
+
+@lru_cache(maxsize=1)
+def repair_session():
+    model = Path(os.environ.get("PAPER_FIGURES_MIGAN", str(Path(__file__).resolve().parents[1] / "workspace/models/migan_pipeline_v2.onnx")))
+    if not model.exists():
+        return None
+    import onnxruntime as ort
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = 2
+    return ort.InferenceSession(str(model), options, providers=["CPUExecutionProvider"])
+
+
+def chinese_font(size):
+    # Use installed fonts without redistributing Microsoft font files.
+    for path in [os.environ.get("PAPER_FIGURES_FONT", ""), "C:/Windows/Fonts/msyh.ttc", "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"]:
+        if path and Path(path).exists():
+            return ImageFont.truetype(path, size=size), path
+    buffer = fitz.Font("china-s").buffer
+    return ImageFont.truetype(io.BytesIO(buffer), size=size), io.BytesIO(buffer)
 
 
 def clean_raster_label(page, bbox, dpi=300):
@@ -25,8 +53,7 @@ def clean_raster_label(page, bbox, dpi=300):
     border = np.concatenate([image[0], image[-1], image[:, 0], image[:, -1]])
     background = np.median(border, axis=0)
     distances = np.max(np.abs(border.astype(float) - background), axis=1)
-    if np.mean(distances < 25) < 0.75:
-        return None, "背景复杂，保留原文等待校正"
+    flat_background = np.mean(distances < 25) >= 0.75
     difference = np.max(np.abs(image.astype(float) - background), axis=2)
     foreground = (difference > 30).astype(np.uint8)
     count, components, stats, _ = cv2.connectedComponentsWithStats(foreground, 8)
@@ -44,8 +71,25 @@ def clean_raster_label(page, bbox, dpi=300):
         mask[components == i] = 255
     if not mask.any() or np.mean(mask > 0) > 0.6:
         return None, "无法可靠分离字形"
+    # Comic Translate's component mask retains glyph contours and punctuation.
+    mask = detect_content_mask_in_bbox(image, min_area=2, margin=1)
+    if not mask.any():
+        return None, "漫画文字掩膜未找到完整字形"
     mask = cv2.dilate(mask, np.ones((3, 3), np.uint8))
-    image[mask > 0] = background.astype(np.uint8)
+    session = repair_session() if not flat_background else None
+    if flat_background:
+        # A learned inpainter can reconstruct letters instead of erasing them.
+        # On uniform panels, fill the comic glyph mask with the sampled color.
+        image[mask > 0] = background.astype(np.uint8)
+    elif session is not None:
+        # The original comic pipeline accepts uint8 RGB and an inverted mask.
+        padded = np.pad(image, ((0, max(0, 512-h)), (0, max(0, 512-w)), (0, 0)), mode="edge")
+        padded_mask = np.pad(mask, ((0, max(0, 512-h)), (0, max(0, 512-w))))
+        with MODEL_LOCK:
+            repaired = inpaint_pipeline(session, padded, padded_mask)[:h, :w]
+        image[mask > 0] = repaired[mask > 0]
+    else:
+        return None, "背景复杂且未安装 MI-GAN，保留原文"
     stream = io.BytesIO()
     Image.fromarray(image).save(stream, format="PNG")
     actual_rect = fitz.Rect(pix.x / (dpi / 72), pix.y / (dpi / 72),
@@ -87,13 +131,27 @@ def prepare_text(overlay, label, figure_box, neighbors):
             right = min(right, max(0, (other.x0 - box.x1) / 2 - 0.1))
     box.x0 -= left
     box.x1 += right
-    size = min(14, label.size, box.height * 0.8)
-    while size >= 3:
-        remaining = overlay.insert_textbox(box, label.translation, fontsize=size, fontname="china-s", color=(0, 0, 0), align=1)
-        if remaining >= 0:
-            return size
-        size -= 0.5
-    return None
+    scale = 300 / 72
+    width, height = max(1, round(box.width * scale)), max(1, round(box.height * scale))
+    canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    initial = max(12, round(min(14, label.size, box.height * 0.85) * scale))
+    _, path = chinese_font(initial)
+    text, size = pil_word_wrap(canvas, (0, 0), path, label.translation,
+                               width, height, "center", 2, initial, min_font_size=12)
+    font, _ = chinese_font(size)
+    draw = ImageDraw.Draw(canvas)
+    bounds = draw.multiline_textbbox((0, 0), text, font=font, align="center", spacing=2)
+    tw, th = bounds[2] - bounds[0], bounds[3] - bounds[1]
+    if tw > width or th > height:
+        return None
+    draw.multiline_text(((width-tw)/2-bounds[0], (height-th)/2-bounds[1]), text,
+                        font=font, fill=(0, 0, 0, 255), align="center", spacing=2)
+    stream = io.BytesIO()
+    canvas.save(stream, format="PNG")
+    overlay.insert_image(box, stream=stream.getvalue())
+    # Keep translated labels searchable; visible glyphs use real font metrics.
+    overlay.insert_text((box.x0, box.y1), label.translation, fontsize=3, fontname="china-s", render_mode=3)
+    return size / scale
 
 
 def export_pdf(pdf, figures, output_dir, event=None, progress=None):

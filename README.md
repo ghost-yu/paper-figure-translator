@@ -21,7 +21,7 @@
 
 ## 当前限制
 
-第一版适合白底、纯色底示意图。复杂背景、文字与曲线交叠、旋转标签或无法容纳的译文会保留原文并记录原因。OCR、翻译和排版仍需人工检查；不能保证任意论文图自动达到出版质量。
+第一版适合白底、纯色底示意图。中文使用真实字体度量，复用漫画项目的换行和字号调整。复杂背景可选 MI-GAN；文字与曲线交叠、旋转标签或无法容纳的译文会保留原文并记录原因。OCR、翻译和排版仍需人工检查；不能保证任意论文图自动达到出版质量。
 
 对损坏的 PDF 文字映射，使用 OCR 校验，并同时清理可见像素与原文字层，避免英文残留。正文和未选页保留，原 PDF 不覆盖。
 
@@ -34,6 +34,8 @@
 - [验证记录](docs/validation.md)
 - [第三方许可](THIRD_PARTY_NOTICES.md)
 
-参考 PDFMathTranslate、pdf2zh-desktop、manga-translator、PDFFigures2 等实现路径。当前应用代码为原创实现，没有复制许可不明确的桌面端代码，也没有上传第三方模型或运行时。
+参考 PDFMathTranslate、pdf2zh-desktop、manga-translator、PDFFigures2 等实现路径。PDF、API 和界面适配为原创；文字掩膜、中文换行和修补接口直接复用 Comic Translate 的代码，来源、固定提交及修改记录见第三方许可。未上传模型或运行时。
 
 本项目使用 [AGPL-3.0-only](LICENSE)。
+
+可选轻量修补模型：运行 `python tools/setup_migan.py`，约 27 MB，安装后重启。现有 Windows 包需使用 bundled Python 并加载其 site-packages。纯色底无需该模型；复杂背景修补结果应人工检查。
