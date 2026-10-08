@@ -1,39 +1,39 @@
 # Paper Figure Translator
 
-为论文 PDF 中的图表翻译内部英文标签，并将中文回填到原图位置。
+翻译论文 PDF 图表内部的英文标签，再把中文写回原来的图表位置。支持原生文字、位图文字和混合架构图；不重新翻译正文。
 
-输入是论文 PDF，输出是包含中文图表的 PDF。核心场景是正文可复制、图内英文为图片像素的混合文档。
-同样需要支持 PDF 原生文字标签、矢量示意图和位图混合的架构图。
+## 启动
 
-## 当前状态
+在现有 pdf2zh Windows 包旁的本项目目录，双击 `start.cmd`。界面地址为 http://127.0.0.1:7868 。复用现有运行时、轻量 RapidOCR 和本地版面模型，无需本地大语言模型。
 
-**源码调研与设计阶段，尚无可运行的翻译应用。**
+独立安装：Python 3.12 环境运行 `python -m pip install -e .`，再运行 `paper-figures`。版面模型不自动下载；没有本地模型时可使用手动框选。
 
-本项目依据用户“先参考 GitHub 其他项目实现”的要求先核验处理方法，
-不把“支持扫描件 OCR”误认为“支持论文图内翻译”。
+## 使用
 
-- [源码调研与证据](docs/research.md)
-- [实现设计与验收标准](docs/design.md)
-- [来源与许可证记录](THIRD_PARTY_NOTICES.md)
+1. 上传论文 PDF，填写页码（例如 `2,4-6`）。
+2. 识别图内文字；自动定位不准时，在页面预览点选图框的两个角。
+3. 检查原文与选中项，可改正 OCR 或直接填写译文。
+4. 翻译并生成中文版 PDF、原文与译文交替排列的 PDF 和处理报告。
 
-## 已确定的技术方向
+默认只读复用本机 PDFMathTranslate 配置。也可在界面填写兼容 OpenAI 格式的 API。密钥不保存到项目文件，不提交到 Git；本地输入、缓存、预览与输出均忽略。
 
-论文 PDF → 定位图表 → 优先提取原生文字，位图标签使用轻量 RapidOCR
-→ 翻译 API → 局部擦除与中文排版 → 写回原 PDF。
+每张图默认附带图注及附近正文给 API，可添加论文背景，也可关闭上下文。模型根据这些信息决定是否保留 ViT 等名称；**没有本地术语表或缩写替换规则**。发送的是图内标签和有限上下文，不是整篇 PDF。
 
-使用 CPU OCR，不部署本地大语言模型。优先复用用户现有 Windows 包中的依赖。
-复杂图表允许检查并修正识别结果；公式、变量、单位和指定缩写需要保护。
+## 当前限制
 
-## 参考项目
+第一版适合白底、纯色底示意图。复杂背景、文字与曲线交叠、旋转标签或无法容纳的译文会保留原文并记录原因。OCR、翻译和排版仍需人工检查；不能保证任意论文图自动达到出版质量。
 
-- [PDFMathTranslate](https://github.com/PDFMathTranslate/PDFMathTranslate)
-- [pdf2zh-desktop](https://github.com/AaronGIG/pdf2zh-desktop)
-- [manga-translator](https://github.com/Antratech-Studios/manga-translator)
-- [PDFFigures2](https://github.com/allenai/pdffigures2)
-- [translate-academic-pdf](https://github.com/FertayLageeze/translate-academic-pdf)
-- [TranslaTHOR](https://github.com/gabsbarreto/TranslaTHOR)
+对损坏的 PDF 文字映射，使用 OCR 校验，并同时清理可见像素与原文字层，避免英文残留。正文和未选页保留，原 PDF 不覆盖。
 
-仓库当前只包含原创调研和设计文档，未复制上述项目源码、模型或运行时。
-后续如引入源码，将记录来源并遵守相应许可证。
+## 开发与来源
 
-本项目原创内容采用 [AGPL-3.0-only](LICENSE)。第三方文件保留各自许可。
+运行测试：`python -m unittest discover -s tests -v`。提交前运行 `python tools/check_secrets.py --history`。
+
+- [源码调研](docs/research.md)
+- [实现与限制](docs/design.md)
+- [验证记录](docs/validation.md)
+- [第三方许可](THIRD_PARTY_NOTICES.md)
+
+参考 PDFMathTranslate、pdf2zh-desktop、manga-translator、PDFFigures2 等实现路径。当前应用代码为原创实现，没有复制许可不明确的桌面端代码，也没有上传第三方模型或运行时。
+
+本项目使用 [AGPL-3.0-only](LICENSE)。
