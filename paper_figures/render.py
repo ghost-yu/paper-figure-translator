@@ -53,11 +53,42 @@ def clean_raster_label(page, bbox, dpi=300):
     return (stream.getvalue(), actual_rect), ""
 
 
-def prepare_text(overlay, label, figure_box):
+def prepare_text(overlay, label, figure_box, neighbors):
     box = fitz.Rect(label.bbox) & fitz.Rect(figure_box)
-    # Fixed text bounds avoid intruding into neighboring modules or arrows.
+    # A little available line spacing is needed for CJK font metrics. Bound
+    # expansion by neighboring labels, not by arbitrary unlimited wrapping.
+    up = min(1.5, box.y0 - figure_box[1])
+    down = min(1.5, figure_box[3] - box.y1)
+    for neighbor in neighbors:
+        if neighbor.id == label.id:
+            continue
+        other = fitz.Rect(neighbor.bbox)
+        if min(box.x1, other.x1) <= max(box.x0, other.x0):
+            continue
+        if other.y1 <= box.y0:
+            up = min(up, max(0, (box.y0 - other.y1) / 2 - 0.1))
+        if other.y0 >= box.y1:
+            down = min(down, max(0, (other.y0 - box.y1) / 2 - 0.1))
+    box.y0 -= up
+    box.y1 += down
+    # OCR bounds hug the English glyphs. Allow a small amount of adjacent
+    # whitespace before shrinking Chinese into unreadably tiny text.
+    left = min(6, box.width * 0.25, box.x0 - figure_box[0])
+    right = min(6, box.width * 0.25, figure_box[2] - box.x1)
+    for neighbor in neighbors:
+        if neighbor.id == label.id:
+            continue
+        other = fitz.Rect(neighbor.bbox)
+        if min(box.y1, other.y1) <= max(box.y0, other.y0):
+            continue
+        if other.x1 <= box.x0:
+            left = min(left, max(0, (box.x0 - other.x1) / 2 - 0.1))
+        if other.x0 >= box.x1:
+            right = min(right, max(0, (other.x0 - box.x1) / 2 - 0.1))
+    box.x0 -= left
+    box.x1 += right
     size = min(14, label.size, box.height * 0.8)
-    while size >= 4.5:
+    while size >= 3:
         remaining = overlay.insert_textbox(box, label.translation, fontsize=size, fontname="china-s", color=(0, 0, 0), align=1)
         if remaining >= 0:
             return size
@@ -97,12 +128,12 @@ def export_pdf(pdf, figures, output_dir, event=None, progress=None):
                                 item["reason"] = item["reason"] or "未选中、没有译文或译文等同原文"
                                 continue
                             repair = None
-                            if label.source == "raster":
+                            if label.source in {"raster", "native-ocr"}:
                                 repair, reason = clean_raster_label(source, label.bbox)
                                 if repair is None:
                                     item["reason"] = reason
                                     continue
-                            fitted = prepare_text(overlay, label, figure.bbox)
+                            fitted = prepare_text(overlay, label, figure.bbox, figure.labels)
                             if fitted is None:
                                 item["reason"] = "译文无法在原标签范围内排版"
                                 continue
@@ -110,9 +141,9 @@ def export_pdf(pdf, figures, output_dir, event=None, progress=None):
                             item.update(status="replaced", reason="", font_size=round(fitted, 2))
                     # All translations and layouts have succeeded before deletion.
                     for label, repair in operations:
-                        if label.source == "native":
+                        if label.source in {"native", "native-ocr"}:
                             target.add_redact_annot(fitz.Rect(label.bbox), fill=False)
-                    if any(l.source == "native" for l, _ in operations):
+                    if any(l.source in {"native", "native-ocr"} for l, _ in operations):
                         target.apply_redactions(images=0, graphics=0, text=0)
                     for _, repair in operations:
                         if repair is not None:

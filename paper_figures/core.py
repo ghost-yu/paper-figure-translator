@@ -16,9 +16,6 @@ import cv2
 import numpy as np
 import pymupdf as fitz
 
-DEFAULT_KEEP = {"CNN", "RNN", "MLP", "ViT", "GPU", "CPU", "RGB", "LSTM", "CLIP", "QKV", "API", "VLM", "OXE", "DoF", "SigLIP", "Gemma"}
-
-
 class Cancelled(RuntimeError):
     pass
 
@@ -71,15 +68,11 @@ def pages_from_text(value: str, count: int) -> list[int]:
     return sorted(pages)
 
 
-def translatable(text: str, keep=DEFAULT_KEEP) -> bool:
+def translatable(text: str) -> bool:
     text = text.strip()
-    if not re.search(r"[A-Za-z]{2,}", text) or text.casefold() in {term.casefold() for term in keep}:
-        return False
-    if re.search(r"[_=<>^{}\[\]∑∫±λσαβ]", text):
-        return False
-    if re.fullmatch(r"\d+\s*DoF", text, re.I):
-        return False
-    return True
+    # Only a language-candidate check. Terminology and abbreviation decisions
+    # belong to the contextual API, not a local word list or formula regex.
+    return bool(re.search(r"[A-Za-z]{2,}", text))
 
 
 def readable_native(text):
@@ -256,19 +249,20 @@ class Scanner:
                                 if (fitz.Rect(bbox) & fitz.Rect(n.bbox)).get_area() / max(1, fitz.Rect(n.bbox).get_area()) > 0.75:
                                     if SequenceMatcher(None, normal(n.text), normal(text)).ratio() < 0.55:
                                         n.text = text
+                                        n.source = "native-ocr"
                                         n.confidence = float(confidence)
                                         n.enabled = not n.reason and translatable(text)
                             continue
                         angled = abs(box[1][1] - box[0][1]) > max(3, abs(box[1][0] - box[0][0]) * 0.15)
                         reason = "识别置信度偏低" if confidence < 0.8 else ("旋转标签待人工处理" if angled else "")
-                        kind = "native" if any(overlap_fraction(bbox, old) > 0.45 for old in unreadable) else "raster"
+                        kind = "native-ocr" if any(overlap_fraction(bbox, old) > 0.45 for old in unreadable) else "raster"
                         figure.labels.append(Label("", text, bbox, kind, float(confidence), (bbox[3] - bbox[1]) * 0.8,
                                                    not reason and translatable(text), reason=reason))
                     figure.labels.sort(key=lambda l: (l.bbox[1], l.bbox[0]))
                     for i, label in enumerate(figure.labels):
                         label.id = f"{ident}t{i + 1}"
                         if not translatable(label.text) and not label.reason:
-                            label.reason = "数字、公式、缩写或非英文标签"
+                            label.reason = "非英文标签，默认跳过"
                     figures.append(figure)
         return figures
 

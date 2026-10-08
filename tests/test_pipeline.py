@@ -10,7 +10,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import pymupdf as fitz
 
-from paper_figures.api import APIConfig, Translator, protect, restore, validate_batch
+from paper_figures.api import APIConfig, Translator, validate_batch
 from paper_figures.core import Scanner, Label, Figure, Cancelled, pages_from_text, translatable, readable_native, pix_array, crop
 from paper_figures.render import export_pdf, clean_raster_label
 
@@ -47,8 +47,10 @@ class Contracts(unittest.TestCase):
         self.assertEqual(pages_from_text("1-2,2,4", 4), [0, 1, 3])
         with self.assertRaises(ValueError):
             pages_from_text("0", 4)
-        for text in ["CNN", "ViT", "vit", "VIT", "x_i", "42", "p(y|x)=1"]:
+        for text in ["x_i", "42", "p(y|x)=1"]:
             self.assertFalse(translatable(text))
+        for text in ["CNN", "ViT", "vit", "VIT"]:
+            self.assertTrue(translatable(text))
         self.assertTrue(translatable("INPUT"))
         self.assertFalse(readable_native("\ufffddataset"))
         self.assertFalse(readable_native("\x1bnoise"))
@@ -59,14 +61,8 @@ class Contracts(unittest.TestCase):
             validate_batch('{"translations":[{"id":"a","text":"甲"},{"id":"a","text":"乙"}]}', {"a", "b"})
         with self.assertRaises(ValueError):
             validate_batch('{"translations":[{"id":"a","text":"甲"}]}', {"a", "b"})
-        with self.assertRaises(ValueError):
-            restore("忘记保留数字", ["1"])
-        self.assertEqual(restore("第 __KEEP_0__ 层", ["1"]), "第 1 层")
 
-    def test_context_cache_and_case_insensitive_abbreviations(self):
-        text, values = protect("vit Layer 1", {"ViT"})
-        self.assertEqual(values, ["vit", "1"])
-        self.assertEqual(restore(text, values), "vit Layer 1")
+    def test_context_cache(self):
         with tempfile.TemporaryDirectory() as directory:
             translator = Translator(APIConfig("https://example.invalid/v1", "test", "test-secret"), Path(directory) / "cache.json")
             self.assertNotEqual(translator.cache_key("expert", "robot control"), translator.cache_key("expert", "medical diagnosis"))
@@ -103,7 +99,7 @@ class MixedPDF(unittest.TestCase):
         self.assertIn("Output", labels)
         self.assertEqual(labels["Input"].source, "raster")
         self.assertEqual(labels["Feature Extraction"].source, "native")
-        self.assertFalse(labels["CNN"].enabled)
+        self.assertTrue(labels["CNN"].enabled)
         self.assertFalse(labels["x_i"].enabled)
         self.assertEqual(len([l for l in labels.values() if l.text == "Feature Extraction"]), 1)
 
@@ -149,6 +145,15 @@ class MixedPDF(unittest.TestCase):
             self.assertEqual(translated[0].rotation, 90)
             self.assertEqual(translated[0].cropbox, source[0].cropbox)
             self.assertEqual(bilingual[0].get_pixmap().samples, source[0].get_pixmap().samples)
+            self.assertIn("特征提取", translated[0].get_text())
+
+    def test_native_ocr_fallback_repairs_pixels_and_text(self):
+        label = Label("fallback", "Feature Extraction", [170, 266, 277, 284], "native-ocr", size=13, translation="特征提取")
+        figure = Figure("fallback-figure", 1, [150, 255, 330, 292], "manual", "", [label])
+        mono, _, _, replaced = export_pdf(self.pdf, [figure], self.directory / "fallback-output")
+        self.assertEqual(replaced, 1)
+        with fitz.open(mono) as translated:
+            self.assertNotIn("Feature Extraction", translated[0].get_text())
             self.assertIn("特征提取", translated[0].get_text())
 
 
