@@ -24,6 +24,11 @@ only labels, not the context. Preserve model/dataset names and abbreviations suc
 (Vision Transformer); never expand them unless explicitly requested in a label.
 For a label that should stay in English, return its exact input text, including spaces
 and punctuation. Do not reformat preserved labels.
+Never translate source code or pseudocode inside a figure. Preserve the entire code
+panel, including comments, docstrings, identifiers, literals and function calls, exactly
+as supplied. Use the spatial figure transcription to distinguish code-panel fragments
+from ordinary diagram labels: an isolated word can be part of a code line. Translate
+ordinary diagram descriptions outside code panels. Already-Chinese text stays unchanged.
 Use consistent terminology and unit presentation across the figure. Translate descriptive
 units such as degrees of freedom consistently; do not retain DoF in one label while
 translating it in another. Separate numbers and words naturally in Chinese labels.
@@ -136,6 +141,10 @@ class Translator:
             context = self.background
             if self.use_context:
                 context += "\nFigure caption:\n" + figure.caption + "\nNearby paper prose:\n" + figure.context
+            # Give the model the whole spatial transcription, including fragments
+            # that are not translation candidates. No local code/term classifier.
+            context += "\nFigure transcription (PDF bounding boxes, reference data):\n" + json.dumps(
+                [{"id": label.id, "text": label.text, "bbox": label.bbox} for label in figure.labels], ensure_ascii=False)
             for label in figure.labels:
                 if not label.enabled or label.translation.strip():
                     continue

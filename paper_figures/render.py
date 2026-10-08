@@ -97,7 +97,7 @@ def clean_raster_label(page, bbox, dpi=300):
     return (stream.getvalue(), actual_rect), ""
 
 
-def prepare_text(overlay, label, figure_box, neighbors):
+def prepare_text(overlay, label, figure_box, neighbors, source=None, repair=None):
     box = fitz.Rect(label.bbox) & fitz.Rect(figure_box)
     # A little available line spacing is needed for CJK font metrics. Bound
     # expansion by neighboring labels, not by arbitrary unlimited wrapping.
@@ -133,7 +133,17 @@ def prepare_text(overlay, label, figure_box, neighbors):
     box.x1 += right
     scale = 300 / 72
     width, height = max(1, round(box.width * scale)), max(1, round(box.height * scale))
-    canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    if source is not None:
+        pix = crop(source, box, 300)
+        box = fitz.Rect(pix.x / scale, pix.y / scale, (pix.x+pix.width)/scale, (pix.y+pix.height)/scale)
+        canvas = Image.fromarray(pix_array(pix))
+        width, height = canvas.size
+        if repair is not None:
+            stream, repaired_box = repair
+            cleaned = Image.open(io.BytesIO(stream)).convert("RGB")
+            canvas.paste(cleaned, (round((repaired_box.x0-box.x0)*scale), round((repaired_box.y0-box.y0)*scale)))
+    else:
+        canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     initial = max(12, round(min(14, label.size, box.height * 0.85) * scale))
     _, path = chinese_font(initial)
     text, size = pil_word_wrap(canvas, (0, 0), path, label.translation,
@@ -149,12 +159,16 @@ def prepare_text(overlay, label, figure_box, neighbors):
     stream = io.BytesIO()
     canvas.save(stream, format="PNG")
     overlay.insert_image(box, stream=stream.getvalue())
+    if source is not None and repair is None:
+        # Later overlapping line patches must see earlier Chinese, not restore
+        # the source English from the original background.
+        source.insert_image(box, stream=stream.getvalue())
     # Keep translated labels searchable; visible glyphs use real font metrics.
     overlay.insert_text((box.x0, box.y1), label.translation, fontsize=3, fontname="china-s", render_mode=3)
     return size / scale
 
 
-def export_pdf(pdf, figures, output_dir, event=None, progress=None):
+def export_pdf(pdf, figures, output_dir, event=None, progress=None, preserve_page_content=True):
     directory = Path(output_dir)
     directory.mkdir(parents=True, exist_ok=True)
     pdf = Path(pdf)
@@ -186,35 +200,50 @@ def export_pdf(pdf, figures, output_dir, event=None, progress=None):
                                 item["reason"] = item["reason"] or "未选中、没有译文或译文等同原文"
                                 continue
                             repair = None
-                            if label.source in {"raster", "native-ocr"}:
+                            if preserve_page_content or label.source in {"raster", "native-ocr"}:
                                 repair, reason = clean_raster_label(source, label.bbox)
                                 if repair is None:
                                     item["reason"] = reason
                                     continue
-                            fitted = prepare_text(overlay, label, figure.bbox, figure.labels)
+                            fitted = prepare_text(overlay, label, figure.bbox, figure.labels,
+                                                  source if preserve_page_content else None, repair)
                             if fitted is None:
                                 item["reason"] = "译文无法在原标签范围内排版"
                                 continue
                             operations.append((label, repair))
                             item.update(status="replaced", reason="", font_size=round(fitted, 2))
+                    if preserve_page_content and operations:
+                        # Compose on one clean background. Independently cropped
+                        # adjacent line patches can otherwise restore old glyphs.
+                        overlay = overlay_doc.new_page(width=source.rect.width, height=source.rect.height)
+                        with fitz.open() as background_doc:
+                            background_doc.insert_pdf(original, from_page=index, to_page=index)
+                            background = background_doc[0]
+                            for _, repair in operations:
+                                stream, rect = repair
+                                background.insert_image(rect, stream=stream)
+                            for label, _ in operations:
+                                figure = next(f for f in figures if f.page == index+1 and any(l is label for l in f.labels))
+                                prepare_text(overlay, label, figure.bbox, figure.labels, source=background)
                     # All translations and layouts have succeeded before deletion.
                     for label, repair in operations:
-                        if label.source in {"native", "native-ocr"}:
+                        if not preserve_page_content and label.source in {"native", "native-ocr"}:
                             target.add_redact_annot(fitz.Rect(label.bbox), fill=False)
-                    if any(l.source in {"native", "native-ocr"} for l, _ in operations):
+                    if not preserve_page_content and any(l.source in {"native", "native-ocr"} for l, _ in operations):
                         target.apply_redactions(images=0, graphics=0, text=0)
                     for _, repair in operations:
                         if repair is not None:
                             stream, rect = repair
                             target.insert_image(rect, stream=stream, overlay=True)
                     if operations:
-                        target.show_pdf_page(target.rect, overlay_doc, 0, overlay=True)
+                        target.show_pdf_page(target.rect, overlay_doc, overlay.number, overlay=True)
             finally:
                 source.set_rotation(rotation)
                 target.set_rotation(rotation)
         check_cancel(event)
         mono_part = mono_path.with_suffix(".part.pdf")
-        translated.subset_fonts()
+        if not preserve_page_content:
+            translated.subset_fonts()
         translated.save(mono_part, garbage=4, deflate=True)
         with fitz.open() as dual:
             for index in range(len(original)):

@@ -67,6 +67,23 @@ class Contracts(unittest.TestCase):
             translator = Translator(APIConfig("https://example.invalid/v1", "test", "test-secret"), Path(directory) / "cache.json")
             self.assertNotEqual(translator.cache_key("expert", "robot control"), translator.cache_key("expert", "medical diagnosis"))
 
+    def test_code_panel_fragments_receive_spatial_context(self):
+        with tempfile.TemporaryDirectory() as directory:
+            class InspectTranslator(Translator):
+                def request(self, items, event, context=""):
+                    self.context_sent = context
+                    return {item["id"]: ("图像编码器" if item["text"] == "Image Encoder" else item["text"]) for item in items}
+            labels = [Label("diagram", "Image Encoder", [10, 10, 100, 30], "native"),
+                      Label("code", "return layer_norm(out)", [200, 10, 360, 30], "native"),
+                      Label("syntax", "#", [200, 40, 210, 50], "native", enabled=False)]
+            figure = Figure("mixed", 1, [0, 0, 400, 100], "manual", "", labels)
+            translator = InspectTranslator(APIConfig("https://example.invalid/v1", "test", "test-secret"), Path(directory) / "cache.json", use_context=False)
+            translator.translate([figure])
+            self.assertIn('"text": "#"', translator.context_sent)
+            self.assertIn('"bbox": [200, 10, 360, 30]', translator.context_sent)
+            self.assertEqual(labels[0].translation, "图像编码器")
+            self.assertEqual(labels[1].translation, labels[1].text)
+
     def test_cancelled_export_does_not_write(self):
         with tempfile.TemporaryDirectory() as directory:
             pdf = Path(directory) / "source.pdf"
@@ -114,7 +131,9 @@ class MixedPDF(unittest.TestCase):
             self.assertIn("Scientific paper body remains selectable.", translated[0].get_text())
             self.assertIn("CNN", translated[0].get_text())
             self.assertIn("x_i", translated[0].get_text())
-            self.assertNotIn("Feature Extraction", translated[0].get_text())
+            # The original text layer is intentionally retained under local
+            # repair patches, avoiding global changes to existing PDF fonts.
+            self.assertIn("Feature Extraction", translated[0].get_text())
             self.assertIn("特征提取", translated[0].get_text())
             a, b = pix_array(source[0].get_pixmap()), pix_array(translated[0].get_pixmap())
             # Arrow is between modules, outside all label repair rectangles.
@@ -153,7 +172,7 @@ class MixedPDF(unittest.TestCase):
         mono, _, _, replaced = export_pdf(self.pdf, [figure], self.directory / "fallback-output")
         self.assertEqual(replaced, 1)
         with fitz.open(mono) as translated:
-            self.assertNotIn("Feature Extraction", translated[0].get_text())
+            self.assertIn("Feature Extraction", translated[0].get_text())
             self.assertIn("特征提取", translated[0].get_text())
 
     def test_comic_mask_erases_letters_and_punctuation_on_flat_background(self):

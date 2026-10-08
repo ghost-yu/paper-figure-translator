@@ -253,7 +253,8 @@ class Scanner:
                                         n.confidence = float(confidence)
                                         n.enabled = not n.reason and translatable(text)
                             continue
-                        angled = abs(box[1][1] - box[0][1]) > max(3, abs(box[1][0] - box[0][0]) * 0.15)
+                        angled = (abs(box[1][1] - box[0][1]) > max(3, abs(box[1][0] - box[0][0]) * 0.15)
+                                  or (bbox[3]-bbox[1] > 2*(bbox[2]-bbox[0]) and len(text) > 5))
                         reason = "识别置信度偏低" if confidence < 0.8 else ("旋转标签待人工处理" if angled else "")
                         kind = "native-ocr" if any(overlap_fraction(bbox, old) > 0.45 for old in unreadable) else "raster"
                         figure.labels.append(Label("", text, bbox, kind, float(confidence), (bbox[3] - bbox[1]) * 0.8,
