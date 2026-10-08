@@ -17,6 +17,8 @@ def main():
     parser.add_argument("--model", help="本地 DocLayout ONNX 路径；不会下载模型")
     parser.add_argument("--scan-only", action="store_true", help="只识别、不调用 API")
     parser.add_argument("--config", help="本地旧项目配置路径，不写入仓库")
+    parser.add_argument("--background", default="", help="给模型的论文背景与术语说明")
+    parser.add_argument("--no-context", action="store_true", help="不发送图注及附近正文")
     parser.add_argument("--output", default="workspace")
     parser.add_argument("--port", type=int, default=7868)
     args = parser.parse_args()
@@ -32,7 +34,8 @@ def main():
     if args.scan_only:
         print(f"图表预览与清单：{directory}")
         return
-    Translator(load_local_config(args.config), directory.parent / "translation-cache.json").translate(figures)
+    Translator(load_local_config(args.config), directory.parent / "translation-cache.json", background=args.background,
+               use_context=not args.no_context).translate(figures)
     mono, dual, report, replaced = export_pdf(args.pdf, figures, directory)
     print(f"完成 {replaced} 个标签的回填。\n译文：{mono}\n双语：{dual}\n报告：{report}")
 

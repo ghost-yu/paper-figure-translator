@@ -10,12 +10,13 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 import threading
 import re
+from difflib import SequenceMatcher
 
 import cv2
 import numpy as np
 import pymupdf as fitz
 
-DEFAULT_KEEP = {"CNN", "RNN", "MLP", "ViT", "GPU", "CPU", "RGB", "LSTM", "CLIP", "QKV", "API"}
+DEFAULT_KEEP = {"CNN", "RNN", "MLP", "ViT", "GPU", "CPU", "RGB", "LSTM", "CLIP", "QKV", "API", "VLM", "OXE", "DoF", "SigLIP", "Gemma"}
 
 
 class Cancelled(RuntimeError):
@@ -48,6 +49,8 @@ class Figure:
     method: str
     preview: str
     labels: list[Label] = field(default_factory=list)
+    caption: str = ""
+    context: str = ""
 
 
 def pages_from_text(value: str, count: int) -> list[int]:
@@ -70,11 +73,40 @@ def pages_from_text(value: str, count: int) -> list[int]:
 
 def translatable(text: str, keep=DEFAULT_KEEP) -> bool:
     text = text.strip()
-    if not re.search(r"[A-Za-z]{2,}", text) or text in keep:
+    if not re.search(r"[A-Za-z]{2,}", text) or text.casefold() in {term.casefold() for term in keep}:
         return False
     if re.search(r"[_=<>^{}\[\]∑∫±λσαβ]", text):
         return False
+    if re.fullmatch(r"\d+\s*DoF", text, re.I):
+        return False
     return True
+
+
+def readable_native(text):
+    return "\ufffd" not in text and not any(ord(c) < 32 and c not in "\n\t\r" for c in text)
+
+
+def figure_context(page, figure_box):
+    """Bounded nearby prose and closest caption, excluding figure labels."""
+    rect = fitz.Rect(figure_box)
+    candidates = []
+    captions = []
+    for block in page.get_text("dict", flags=fitz.TEXTFLAGS_TEXT)["blocks"]:
+        box = fitz.Rect(block["bbox"])
+        if overlap_fraction(box, rect) > 0.15:
+            continue
+        text = " ".join("".join(span["text"] for span in line["spans"]) for line in block.get("lines", []))
+        if not readable_native(text) or len(text.strip()) < 20:
+            continue
+        distance = max(0, rect.y0 - box.y1, box.y0 - rect.y1)
+        if re.match(r"\s*(?:fig(?:ure)?\.?\s*\d|图\s*\d)", text, re.I):
+            captions.append((distance, text))
+        elif distance < 240:
+            candidates.append((distance, box.y0, text))
+    caption = min(captions, default=(0, ""), key=lambda x: x[0])[1][:1000]
+    nearest = sorted(candidates)[:2]
+    context = "\n\n".join(item[2][:900] for item in sorted(nearest, key=lambda x: x[1]))[:1800]
+    return caption, context
 
 
 def pix_array(pix) -> np.ndarray:
@@ -189,8 +221,10 @@ class Scanner:
                     preview = str(directory / f"{ident}.png")
                     pix.save(preview)
                     figure = Figure(ident, index + 1, list(rect), method, preview)
+                    figure.caption, figure.context = figure_context(page, rect)
                     traces = page.get_texttrace()
                     native = []
+                    unreadable = []
                     for block in page.get_text("dict", flags=fitz.TEXTFLAGS_TEXT)["blocks"]:
                         for line in block.get("lines", []):
                             for span in line["spans"]:
@@ -199,6 +233,9 @@ class Scanner:
                                     continue
                                 if any((t.get("type") == 3 or t.get("opacity", 1) == 0)
                                        and overlap_fraction(bbox, t["bbox"]) > 0.8 for t in traces):
+                                    continue
+                                if not readable_native(span["text"]):
+                                    unreadable.append(list(bbox))
                                     continue
                                 direction = line.get("dir", (1, 0))
                                 reason = "旋转标签待人工处理" if abs(direction[1]) > 0.15 or direction[0] < 0 else ""
@@ -209,11 +246,23 @@ class Scanner:
                     # OCR must run even if this figure already has some native text.
                     for box, text, confidence in self.recognize(pix):
                         bbox = pixel_box_to_pdf(box, pix, self.dpi)
-                        if any(overlap_fraction(bbox, n.bbox) > 0.45 for n in native):
+                        matching = [n for n in native if overlap_fraction(bbox, n.bbox) > 0.45]
+                        if matching:
+                            # Bad font mappings can also produce plausible Latin
+                            # garbage. High-confidence OCR verifies a whole span.
+                            if len(matching) == 1 and confidence >= 0.9:
+                                n = matching[0]
+                                normal = lambda s: re.sub(r"\s+", "", s).casefold()
+                                if (fitz.Rect(bbox) & fitz.Rect(n.bbox)).get_area() / max(1, fitz.Rect(n.bbox).get_area()) > 0.75:
+                                    if SequenceMatcher(None, normal(n.text), normal(text)).ratio() < 0.55:
+                                        n.text = text
+                                        n.confidence = float(confidence)
+                                        n.enabled = not n.reason and translatable(text)
                             continue
                         angled = abs(box[1][1] - box[0][1]) > max(3, abs(box[1][0] - box[0][0]) * 0.15)
                         reason = "识别置信度偏低" if confidence < 0.8 else ("旋转标签待人工处理" if angled else "")
-                        figure.labels.append(Label("", text, bbox, "raster", float(confidence), (bbox[3] - bbox[1]) * 0.8,
+                        kind = "native" if any(overlap_fraction(bbox, old) > 0.45 for old in unreadable) else "raster"
+                        figure.labels.append(Label("", text, bbox, kind, float(confidence), (bbox[3] - bbox[1]) * 0.8,
                                                    not reason and translatable(text), reason=reason))
                     figure.labels.sort(key=lambda l: (l.bbox[1], l.bbox[0]))
                     for i, label in enumerate(figure.labels):

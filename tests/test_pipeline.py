@@ -10,8 +10,8 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import pymupdf as fitz
 
-from paper_figures.api import APIConfig, restore, validate_batch
-from paper_figures.core import Scanner, Label, Figure, Cancelled, pages_from_text, translatable, pix_array, crop
+from paper_figures.api import APIConfig, Translator, protect, restore, validate_batch
+from paper_figures.core import Scanner, Label, Figure, Cancelled, pages_from_text, translatable, readable_native, pix_array, crop
 from paper_figures.render import export_pdf, clean_raster_label
 
 
@@ -47,9 +47,11 @@ class Contracts(unittest.TestCase):
         self.assertEqual(pages_from_text("1-2,2,4", 4), [0, 1, 3])
         with self.assertRaises(ValueError):
             pages_from_text("0", 4)
-        for text in ["CNN", "x_i", "42", "p(y|x)=1"]:
+        for text in ["CNN", "ViT", "vit", "VIT", "x_i", "42", "p(y|x)=1"]:
             self.assertFalse(translatable(text))
         self.assertTrue(translatable("INPUT"))
+        self.assertFalse(readable_native("\ufffddataset"))
+        self.assertFalse(readable_native("\x1bnoise"))
         self.assertNotIn("test-secret", repr(APIConfig("https://example.invalid/v1", "test", "test-secret")))
 
     def test_api_invalid_batch_never_accepted(self):
@@ -60,6 +62,14 @@ class Contracts(unittest.TestCase):
         with self.assertRaises(ValueError):
             restore("忘记保留数字", ["1"])
         self.assertEqual(restore("第 __KEEP_0__ 层", ["1"]), "第 1 层")
+
+    def test_context_cache_and_case_insensitive_abbreviations(self):
+        text, values = protect("vit Layer 1", {"ViT"})
+        self.assertEqual(values, ["vit", "1"])
+        self.assertEqual(restore(text, values), "vit Layer 1")
+        with tempfile.TemporaryDirectory() as directory:
+            translator = Translator(APIConfig("https://example.invalid/v1", "test", "test-secret"), Path(directory) / "cache.json")
+            self.assertNotEqual(translator.cache_key("expert", "robot control"), translator.cache_key("expert", "medical diagnosis"))
 
     def test_cancelled_export_does_not_write(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -121,6 +131,25 @@ class MixedPDF(unittest.TestCase):
             repair, reason = clean_raster_label(doc[0], [220, 167, 377, 174])
             self.assertIsNone(repair)
             self.assertTrue(reason)
+
+    def test_rotated_cropped_page_coordinate_mapping(self):
+        pdf = self.directory / "rotated-cropped.pdf"
+        with fitz.open(self.pdf) as doc:
+            doc[0].set_cropbox(fitz.Rect(30, 50, 560, 380))
+            doc[0].set_rotation(90)
+            doc.save(pdf)
+        figures = Scanner().scan(pdf, self.directory / "rotated-previews", "1", [{"page": 1, "bbox": [15, 45, 525, 255]}])
+        replacements = {"Input": "输入", "Output": "输出", "Feature Extraction": "特征提取"}
+        for figure in figures:
+            for label in figure.labels:
+                label.translation = replacements.get(label.text, "")
+        mono, dual, _, replaced = export_pdf(pdf, figures, self.directory / "rotated-output")
+        self.assertEqual(replaced, 3)
+        with fitz.open(pdf) as source, fitz.open(mono) as translated, fitz.open(dual) as bilingual:
+            self.assertEqual(translated[0].rotation, 90)
+            self.assertEqual(translated[0].cropbox, source[0].cropbox)
+            self.assertEqual(bilingual[0].get_pixmap().samples, source[0].get_pixmap().samples)
+            self.assertIn("特征提取", translated[0].get_text())
 
 
 if __name__ == "__main__":
