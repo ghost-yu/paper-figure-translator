@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paper-figure-translator"
+version = "0.1.0"
+description = "Translate labels inside academic PDF figures with local OCR"
+requires-python = ">=3.11,<3.13"
+license = {text = "AGPL-3.0-only"}
+dependencies = ["pymupdf>=1.25,<1.26", "numpy", "opencv-python-headless", "rapidocr-onnxruntime==1.4.4", "requests>=2.31", "gradio>=5.23,<5.36", "Pillow"]
+
+[project.scripts]
+paper-figures = "paper_figures.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["paper_figures*"]
